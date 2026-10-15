@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#ffb4d2">
+<title>Heart Rain</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
+body{background:linear-gradient(160deg,#f98db8 0%,#ffc1d9 48%,#ffe9f1 100%);font-family:system-ui,sans-serif;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+#rain{position:fixed;inset:0;width:100%;height:100%;pointer-events:none}
+#heartResult{position:fixed;left:50%;top:50%;width:min(100vw,380px);aspect-ratio:1;transform:translate(-50%,-50%) scale(.2);opacity:0;pointer-events:none;z-index:5;will-change:transform,opacity;transition:opacity .25s,transform .35s cubic-bezier(.18,.9,.25,1.3)}
+#heartResult.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+#heartResult canvas{display:block;width:100%;height:100%}
+@media(prefers-reduced-motion:reduce){#heartResult{transition:opacity .2s}}
+</style>
+</head>
+<body>
+<canvas id="rain" aria-hidden="true"></canvas>
+<div id="heartResult" role="img" aria-label="QR Code เพลง รูปหัวใจ"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+/* ใส่ลิงก์เพลงจริงที่ต้องการสุ่มได้ในรายการนี้ (ลิงก์สั้น ๆ เช่น https://youtu.be/xxxx จะสแกนง่ายกว่ามาก) */
+const songLinks=[
+ "https://youtu.be/1OMZrYHIim8?si=gp2rKI2pI2rZ_PhK",
+ "https://youtu.be/0msD8eJyRo0?si=bRPn_EAB2JI6wUqn",
+ "https://youtu.be/uSNZpoIfHTg?si=IKMm5NrkjhroQKPW",
+ "https://youtu.be/lfSzgjz6U_g?si=V3C1kVbT1vaO7CuK",
+ "https://youtu.be/GGjHIEjrfjw?si=YQIGBgF4u_bqo4Zm"
+];
+
+const heartResult=document.getElementById('heartResult');
+let lastShake=0,lastIndex=-1,hideTimer,sensorSeen=false;
+
+/* =====================================================
+   1) ฝนหัวใจ — วาดบน canvas ใบเดียว (แทน DOM + filter หลายสิบตัว)
+   ===================================================== */
+const rainCanvas=document.getElementById('rain');
+const rctx=rainCanvas.getContext('2d');
+const reduceMotion=matchMedia('(prefers-reduced-motion:reduce)').matches;
+const SPAWN_PER_SEC=reduceMotion?4:10;   /* เท่าเดิม: ~10 ดวง/วินาที */
+const MAX_PARTICLES=140;
+const SPR=96, GLYPH=0.62;                /* ขนาด sprite และสัดส่วนตัวอักษรในนั้น */
+let W=0,H=0,dpr=1;
+
+function resize(){
+ dpr=Math.min(window.devicePixelRatio||1,2);   /* จำกัด DPR ลดภาระการวาด */
+ W=window.innerWidth;H=window.innerHeight;
+ const w=Math.round(W*dpr),h=Math.round(H*dpr);
+ if(rainCanvas.width!==w||rainCanvas.height!==h){rainCanvas.width=w;rainCanvas.height=h;}
+}
+resize();
+window.addEventListener('resize',resize,{passive:true});
+
+/* วาดอีโมจิลง sprite ครั้งเดียว (พร้อมเงาในตัว) แล้ว drawImage ซ้ำ ๆ — เบากว่า filter:drop-shadow มาก */
+const sprites=['💗','💖','💕','💘','♥','💞'].map(ch=>{
+ const c=document.createElement('canvas');c.width=c.height=SPR;
+ const x=c.getContext('2d');
+ x.font=(SPR*GLYPH)+'px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+ x.textAlign='center';x.textBaseline='middle';
+ x.shadowColor='rgba(217,54,119,.35)';x.shadowBlur=5;x.shadowOffsetY=2;
+ x.fillStyle='#ff3d7f';              /* ใช้กับ ♥ ที่เป็นตัวอักษรธรรมดา */
+ x.fillText(ch,SPR/2,SPR/2+2);
+ return c;
+});
+
+const particles=[];
+function spawn(delay){
+ const dur=3.8+Math.random()*4.8;
+ particles.push({
+  spr:sprites[(Math.random()*sprites.length)|0],
+  fx:Math.random(),                           /* ตำแหน่งแนวนอนเป็นสัดส่วนจอ */
+  d:(14+Math.random()*25)/GLYPH,              /* ขนาดที่วาด */
+  drift:(Math.random()-.5)*100,
+  spin:(Math.random()-.5)*420*Math.PI/180,
+  dur:dur,
+  t:-(delay||0)/dur                           /* t<0 = ยังไม่เริ่ม (ใช้หน่วงตอน burst) */
+ });
+}
+function burst(n,gap){for(let j=0;j<n;j++)if(particles.length<MAX_PARTICLES)spawn(j*gap);}
+
+/* เติมจอตอนเริ่มให้ฝนไม่โล่ง */
+for(let i=0;i<30;i++){spawn(0);particles[i].t=Math.random()*.9;}
+
+let last=0,spawnAcc=0;
+function frame(ts){
+ const dt=Math.min((ts-last)/1000,.05);last=ts;   /* clamp กันกระโดดตอนกลับมาจากแท็บอื่น */
+ spawnAcc+=dt*SPAWN_PER_SEC;
+ while(spawnAcc>=1){spawnAcc-=1;if(particles.length<MAX_PARTICLES)spawn(0);}
+
+ rctx.setTransform(1,0,0,1,0,0);
+ rctx.clearRect(0,0,rainCanvas.width,rainCanvas.height);
+
+ for(let i=particles.length-1;i>=0;i--){
+  const p=particles[i];
+  p.t+=dt/p.dur;
+  if(p.t>=1){particles[i]=particles[particles.length-1];particles.pop();continue;}
+  if(p.t<0)continue;
+  const t=p.t;
+  const a=t<.08?t/.08*.9:.9-(t-.08)/.92*.75;
+  const x=p.fx*W+p.drift*t;
+  const y=(-.08+1.2*t)*H;
+  const r=p.spin*t,c=Math.cos(r)*dpr,s=Math.sin(r)*dpr;
+  rctx.globalAlpha=a;
+  rctx.setTransform(c,s,-s,c,x*dpr,y*dpr);
+  rctx.drawImage(p.spr,-p.d/2,-p.d/2,p.d,p.d);
+ }
+ requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* =====================================================
+   2) QR รูปหัวใจ
+   ตัวหัวใจคือกรอบสีขาวขอบชมพู ส่วน QR เต็มแผ่น (ข้อมูลครบ สแกนติดแน่นอน)
+   ถูกคำนวณให้พอดีอยู่ในหัวใจ และ render ไว้ล่วงหน้าตอนว่าง ไม่หน่วงตอนเขย่า
+   ===================================================== */
+const HEART='M50 96 C22 80 0 60 0 34 C0 14 14 1 29 1 C40 1 47 7 50 16 C53 7 60 1 71 1 C86 1 100 14 100 34 C100 60 78 80 50 96 Z';
+const UNIT=7, CANVAS_UNITS=108;            /* 1 หน่วย = 7px → canvas 756px คมพอสำหรับจอ DPR 2–3 */
+const QR_SIZE=47, QR_CX=50, QR_CY=47;      /* ขนาด/ตำแหน่ง QR ในหัวใจ (หน่วยเดียวกับ path) */
+const DARK='#29131d', FINDER='#b3124f';
+
+function rr(x,X,Y,w,h,r){
+ x.moveTo(X+r,Y);x.arcTo(X+w,Y,X+w,Y+h,r);x.arcTo(X+w,Y+h,X,Y+h,r);x.arcTo(X,Y+h,X,Y,r);x.arcTo(X,Y,X+w,Y,r);x.closePath();
+}
+
+/* ดึงเมทริกซ์ QR จาก qrcodejs (ไม่ใช้ canvas/img ที่มันสร้างให้) */
+function getMatrix(text){
+ /* qrcodejs จะแทรก BOM ถ้ามีอักษรไทยดิบ ทำให้บางแอปสแกนเปิดลิงก์ไม่ได้ → encode เฉพาะตัวที่ไม่ใช่ ASCII */
+ const safe=text.replace(/[^\x00-\x7F]/g,ch=>encodeURIComponent(ch));
+ const q=new QRCode(document.createElement('div'),{text:safe,width:64,height:64,correctLevel:QRCode.CorrectLevel.M});
+ const model=q._oQRCode,n=model.getModuleCount();
+ return {n,dark:(r,c)=>model.isDark(r,c)};
+}
+
+function renderCard(text){
+ const px=CANVAS_UNITS*UNIT;
+ const cv=document.createElement('canvas');cv.width=cv.height=px;
+ const x=cv.getContext('2d');
+ const heart=new Path2D(HEART);
+ x.setTransform(UNIT,0,0,UNIT,4*UNIT,3*UNIT);    /* เว้นขอบให้เงา */
+
+ /* ตัวหัวใจสีขาว + เงา */
+ x.save();
+ x.shadowColor='rgba(180,43,100,.38)';x.shadowBlur=3.2*UNIT;x.shadowOffsetY=2.2*UNIT;
+ x.fillStyle='#fff';x.fill(heart);
+ x.restore();
+
+ /* ขอบไล่สีชมพู (stroke แล้ว clip ให้เหลือเฉพาะด้านใน) */
+ x.save();
+ x.clip(heart);
+ const g=x.createLinearGradient(0,0,100,96);g.addColorStop(0,'#ff8ab9');g.addColorStop(1,'#ff4e91');
+ x.strokeStyle=g;x.lineWidth=7;x.lineJoin='round';x.stroke(heart);
+ x.restore();
+
+ /* หัวใจเล็กตกแต่งตรงปลายล่าง */
+ x.save();
+ x.translate(50-6,82.5-5.7);x.scale(.12,.12);
+ x.fillStyle='#ff4e91';x.fill(heart);
+ x.restore();
+
+ /* โมดูล QR */
+ const {n,dark}=getMatrix(text);
+ const m=QR_SIZE/n,x0=QR_CX-QR_SIZE/2,y0=QR_CY-QR_SIZE/2;
+ const inFinder=(r,c)=>(r<7&&c<7)||(r<7&&c>=n-7)||(r>=n-7&&c<7);
+
+ x.fillStyle=DARK;x.beginPath();
+ for(let r=0;r<n;r++)for(let c=0;c<n;c++){
+  if(inFinder(r,c)||!dark(r,c))continue;
+  rr(x,x0+c*m,y0+r*m,m,m,m*.28);
+ }
+ x.fill();
+
+ /* ตัวหา (finder) 3 มุม วาดเป็นสี่เหลี่ยมมนสีชมพูเข้ม */
+ x.fillStyle=FINDER;
+ for(const [r,c] of [[0,0],[0,n-7],[n-7,0]]){
+  const fx=x0+c*m,fy=y0+r*m;
+  x.beginPath();rr(x,fx,fy,7*m,7*m,1.9*m);rr(x,fx+m,fy+m,5*m,5*m,1.1*m);x.fill('evenodd');
+  x.beginPath();rr(x,fx+2*m,fy+2*m,3*m,3*m,.9*m);x.fill();
+ }
+ return cv;
+}
+
+const cards=[];
+function getCard(i){return cards[i]||(cards[i]=renderCard(songLinks[i]));}
+
+/* render ล่วงหน้าทีละใบตอนเบราว์เซอร์ว่าง */
+const idle=window.requestIdleCallback||(f=>setTimeout(f,60));
+function warm(i){
+ if(i>=songLinks.length||typeof QRCode==='undefined')return;
+ getCard(i);idle(()=>warm(i+1));
+}
+window.addEventListener('load',()=>idle(()=>warm(0)));
+
+function showRandomHeart(){
+ if(!songLinks.length||typeof QRCode==='undefined')return;
+ let i=Math.floor(Math.random()*songLinks.length);
+ if(songLinks.length>1&&i===lastIndex)i=(i+1)%songLinks.length;
+ lastIndex=i;
+
+ const card=getCard(i);
+ heartResult.textContent='';heartResult.appendChild(card);
+
+ heartResult.classList.remove('show');
+ void heartResult.offsetWidth;
+ heartResult.classList.add('show');
+
+ clearTimeout(hideTimer);
+ hideTimer=setTimeout(()=>heartResult.classList.remove('show'),15000);
+ burst(16,.035);
+}
+
+/* =====================================================
+   3) เขย่าเพื่อสุ่ม — listener เดียว + รองรับ iOS
+   ===================================================== */
+const mag=a=>{
+ if(!a||a.x==null)return 0;
+ sensorSeen=true;
+ return Math.hypot(a.x||0,a.y||0,a.z||0);
+};
+function onMotion(e){
+ const lin=mag(e.acceleration);                  /* ไม่รวมแรงโน้มถ่วง */
+ const grav=mag(e.accelerationIncludingGravity); /* สำรองกรณีเครื่องไม่ส่งค่าแรกมา */
+ if(lin>12||grav>25){
+  const now=Date.now();
+  if(now-lastShake>1600){lastShake=now;showRandomHeart();}
+ }
+}
+
+let motionBound=false;
+function bindMotion(){
+ if(motionBound)return;motionBound=true;
+ window.addEventListener('devicemotion',onMotion,{passive:true});
+}
+const needPermission=window.DeviceMotionEvent&&typeof DeviceMotionEvent.requestPermission==='function';
+if(!needPermission)bindMotion();
+
+/* iOS ต้องกดอนุญาตเซนเซอร์จากการแตะของผู้ใช้ก่อน (ต้องเปิดผ่าน HTTPS ด้วย)
+   เครื่องที่ไม่มีเซนเซอร์/ยังไม่ได้รับสิทธิ์: แตะหน้าจอเพื่อสุ่มแทนได้ */
+document.addEventListener('click',async()=>{
+ if(needPermission&&!motionBound){
+  try{if(await DeviceMotionEvent.requestPermission()==='granted')bindMotion();}catch(_){}
+ }
+ if(!sensorSeen)showRandomHeart();
+});
+</script>
+</body>
+</html>
